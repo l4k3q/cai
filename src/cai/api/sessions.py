@@ -17,7 +17,7 @@ from cai.sdk.agents.agent import Agent
 from cai.sdk.agents.items import ItemHelpers, TResponseInputItem
 from cai.sdk.agents.result import RunResult
 from cai.sdk.agents.run import DEFAULT_MAX_TURNS, Runner
-from cai.util import update_agent_models_recursively
+from cai.util import apply_provider_to_agent, update_agent_models_recursively
 
 
 class SessionNotFoundError(KeyError):
@@ -28,10 +28,47 @@ AgentFactory = Callable[[str, str, str], Agent]
 """Factory type used to construct CAI agents for sessions."""
 
 
+# Appended to the agent's system prompt for every API session: reply in Chinese.
+_CN_INSTRUCTION_SUFFIX = (
+    "\n\n请始终使用中文进行思考和输出，除非用户明确要求使用其他语言。"
+)
+
+
+def _append_cn_instruction(instructions: Any) -> Any:
+    """Wrap an agent's instructions (string or callable) to require Chinese output.
+
+    Keeps the original instructions intact and appends a language directive. For
+    callable instructions we wrap the callable and append the suffix to its result.
+    """
+    if isinstance(instructions, str):
+        return instructions + _CN_INSTRUCTION_SUFFIX
+
+    if callable(instructions):
+
+        def wrapped(run_context, agent):  # type: ignore[no-untyped-def]
+            try:
+                base = instructions(run_context, agent)
+                if not isinstance(base, str):
+                    base = ""
+            except Exception:
+                base = ""
+            return (base or "") + _CN_INSTRUCTION_SUFFIX
+
+        return wrapped
+
+    return instructions
+
+
 def _default_agent_factory(agent_name: str, model_name: str, agent_id: str) -> Agent:
     """Default factory that instantiates an agent and enforces the requested model."""
     agent = get_agent_by_name(agent_name, agent_id=agent_id)
     update_agent_models_recursively(agent, model_name)
+    # Default every API session to Chinese replies (unless the user opts out).
+    if os.getenv("CAI_LANG", "cn").lower() not in ("en", "english"):
+        try:
+            agent = agent.clone(instructions=_append_cn_instruction(agent.instructions))
+        except Exception:
+            pass
     return agent
 
 
@@ -61,6 +98,8 @@ class SessionState:
         metadata: Dict[str, Any] | None,
         agent_factory: AgentFactory,
         session_id: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.id = session_id or str(uuid.uuid4())
         self.agent_name = agent_name
@@ -68,13 +107,26 @@ class SessionState:
         self.stateful = stateful
         self.metadata = metadata or {}
         self._agent_factory = agent_factory
+        self.provider_base = base_url
+        self.provider_key = api_key
         self.agent: Agent = self._agent_factory(agent_name, model_name, self.id)
+        # Attach the per-session provider override to the agent model tree.
+        if base_url is not None or api_key is not None:
+            apply_provider_to_agent(self.agent, base_url, api_key)
         self.history: List[TResponseInputItem] = []
         self.created_at = datetime.now(timezone.utc)
         self.updated_at = self.created_at
         self._lock = asyncio.Lock()
         self._current_task: asyncio.Task | None = None
         self.last_steps: List[Dict[str, Any]] = []
+        # ── 学习上下文 (§5.5) ──
+        self.question_id: str | None = None
+        self.solution_method_id: str | None = None
+        self.solution_version: int | None = None
+        self.learning_mode: str | None = None  # explain | replay | live_solve
+        self.resolution_status: str | None = None  # matched | insufficient | unmatched | skipped
+        self.resolution_locked: bool = False
+        self.current_step_id: str | None = None
 
     def to_summary(self) -> SessionSummary:
         """Return a lightweight snapshot of the session state."""
@@ -136,6 +188,19 @@ class SessionState:
     def set_running_task(self, task: asyncio.Task | None) -> None:
         self._current_task = task
 
+    def try_set_running_task(self, task: asyncio.Task) -> bool:
+        """Register a task unless this session already has an active run."""
+        current = self._current_task
+        if current is not None and not current.done():
+            return False
+        self._current_task = task
+        return True
+
+    def clear_running_task(self, task: asyncio.Task) -> None:
+        """Clear only the task supplied, avoiding races with a newer run."""
+        if self._current_task is task:
+            self._current_task = None
+
     def interrupt(self) -> bool:
         """Attempt to cancel the currently running task, if any. Returns True if signal sent."""
         task = self._current_task
@@ -153,18 +218,13 @@ class SessionState:
         if not task or task.done():
             return False
         task.cancel()
-        try:
-            await asyncio.wait_for(task, timeout=timeout)
-        except asyncio.TimeoutError:
-            # Deliver cancellation and swallow the exception so caller can proceed.
-            await asyncio.gather(task, return_exceptions=True)
-            self.set_running_task(None)
-            return False
-        except asyncio.CancelledError:
-            self.set_running_task(None)
+        # asyncio.wait() returns at the deadline without waiting indefinitely
+        # for cancellation-resistant network/tool code to unwind.
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if task in done:
+            self.clear_running_task(task)
             return True
-        self.set_running_task(None)
-        return True
+        return False
 
     def reload(self, preserve_history: bool = True) -> None:
         """Recreate the agent instance. Optionally preserve the message history."""
@@ -225,6 +285,8 @@ class SessionManager:
         model_name: str | None = None,
         stateful: bool = True,
         metadata: Dict[str, Any] | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ) -> SessionState:
         session = SessionState(
             agent_name=agent_name or self._default_agent,
@@ -232,6 +294,8 @@ class SessionManager:
             stateful=stateful,
             metadata=metadata,
             agent_factory=self._agent_factory,
+            base_url=base_url,
+            api_key=api_key,
         )
         with self._lock:
             # Ensure per-session isolation: clear agent-side history and steps

@@ -41,6 +41,8 @@ dependencies = [
     # --- Misc (used in specific modules) ---
     "mcp",                             # Model Context Protocol
     "nest_asyncio",                    # Async compat in sync contexts
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.31.0",
 ]
 classifiers = [
     "Typing :: Typed",

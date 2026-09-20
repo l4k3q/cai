@@ -1110,6 +1110,7 @@ def _run_local(
                 command, shell=True,  # nosec B602
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, bufsize=1, cwd=target_dir,
+                start_new_session=True,  # allow process-group kill on timeout
             )
 
             output_buffer = []
@@ -1120,33 +1121,77 @@ def _run_local(
                 remaining = max(0, total_timeout - elapsed)
                 return f"{total_timeout}s|{remaining:.1f}s"
 
-            for line in iter(process.stdout.readline, ""):
-                if not line:
-                    break
-                output_buffer.append(line)
-                buffer_size += 1
-                if buffer_size >= update_interval:
-                    current_output = "".join(output_buffer)
-                    elapsed = time.time() - process_start_time
-                    streaming_args = dict(tool_args)
-                    streaming_args["timeout_countdown"] = _format_countdown(elapsed, timeout)
-                    update_tool_streaming(tool_name, streaming_args, current_output, call_id, token_info)
-                    buffer_size = 0
+            def _kill_process_group(proc):
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
 
+            # Read stdout on a background thread so a silent command (one that
+            # emits no newline for a long time, e.g. a Pollard-rho factorization
+            # loop) cannot block the reader forever and bypass `timeout`. The
+            # poll loop below enforces the timeout independently of output.
+            reader_lines = []
+            read_done = threading.Event()
+
+            def _read_stdout():
+                try:
+                    for line in iter(process.stdout.readline, ""):
+                        if not line:
+                            break
+                        reader_lines.append(line)
+                finally:
+                    read_done.set()
+
+            reader_thread = threading.Thread(target=_read_stdout, daemon=True)
+            reader_thread.start()
+
+            timed_out = False
+            while True:
+                while reader_lines:
+                    line = reader_lines.pop(0)
+                    output_buffer.append(line)
+                    buffer_size += 1
+                    if buffer_size >= update_interval:
+                        current_output = "".join(output_buffer)
+                        elapsed = time.time() - process_start_time
+                        streaming_args = dict(tool_args)
+                        streaming_args["timeout_countdown"] = _format_countdown(elapsed, timeout)
+                        update_tool_streaming(tool_name, streaming_args, current_output, call_id, token_info)
+                        buffer_size = 0
+
+                if read_done.is_set() and process.poll() is not None:
+                    break
+                if time.time() - process_start_time >= timeout:
+                    timed_out = True
+                    _kill_process_group(process)
+                    break
+                time.sleep(0.1)
+
+            reader_thread.join(timeout=2)
             process.stdout.close()
-            return_code = process.wait(timeout=timeout)
+            return_code = process.wait() if timed_out else process.wait(timeout=10)
             process_execution_time = time.time() - process_start_time
 
             stderr_data = process.stderr.read()
             if stderr_data:
                 output_buffer.append("\nERROR OUTPUT:\n" + stderr_data)
 
+            if timed_out:
+                output_buffer.append(f"\n[Command timed out after {timeout} seconds]")
+
             final_output = "".join(output_buffer)
-            if return_code != 0:
+            if not timed_out and return_code != 0:
                 final_output += f"\nCommand exited with code {return_code}"
 
             execution_info = {
-                "status": "completed" if return_code == 0 else "error",
+                "status": (
+                    "timeout" if timed_out
+                    else ("completed" if return_code == 0 else "error")
+                ),
                 "return_code": return_code, "environment": "Local",
                 "host": os.path.basename(target_dir), "tool_time": process_execution_time,
             }

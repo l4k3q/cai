@@ -3498,6 +3498,14 @@ class OpenAIChatCompletionsModel(Model):
         # Determine provider based on model string
         model_str = str(kwargs["model"]).lower()
 
+        # Per-session provider override (set by the API layer on the model object via
+        # apply_provider_to_agent). Takes precedence over the global .env configuration
+        # and over the alias/ollama branches below.
+        if getattr(self, "_provider_base", None):
+            kwargs["api_base"] = self._provider_base
+        if getattr(self, "_provider_key", None):
+            kwargs["api_key"] = self._provider_key
+
         # Gateway base: CSI_CUSTOM_ENDPOINT / ALIAS_API_URL if model qualifies; else OPENAI_API_BASE (see llm_api_base).
         _model_for_base = str(kwargs.get("model") or os.getenv("CAI_MODEL") or "")
         _alias_gateway_base = resolve_llm_openai_compatible_base(_model_for_base).rstrip("/")
@@ -3534,6 +3542,10 @@ class OpenAIChatCompletionsModel(Model):
                 litellm.drop_params = True
                 kwargs.pop("parallel_tool_calls", None)
                 kwargs.pop("store", None)  # DeepSeek doesn't support store parameter
+                # DeepSeek rejects stream_options when stream is false (the API's
+                # non-streaming hooks path). Remove it to avoid a 401-style error.
+                if not kwargs.get("stream"):
+                    kwargs.pop("stream_options", None)
                 # Remove tool_choice if no tools are specified
                 if not converted_tools:
                     kwargs.pop("tool_choice", None)
@@ -4199,6 +4211,11 @@ class OpenAIChatCompletionsModel(Model):
                             provider_kwargs.pop(
                                 "parallel_tool_calls", None
                             )  # DeepSeek doesn't support parallel tool calls
+                            # DeepSeek rejects stream_options when stream is false
+                            # (the API's non-streaming hooks path). Remove it to
+                            # avoid an invalid_request_error surfaced as a 401.
+                            if not provider_kwargs.get("stream"):
+                                provider_kwargs.pop("stream_options", None)
 
                             # Add reasoning support for DeepSeek
                             if (
@@ -4483,6 +4500,8 @@ class OpenAIChatCompletionsModel(Model):
             tool_choice=tool_choice,
             stream=stream,
             parallel_tool_calls=parallel_tool_calls,
+            agent_name=self.agent_name,
+            agent_type=self.agent_type,
         )
 
     async def _fetch_response_litellm_ollama(

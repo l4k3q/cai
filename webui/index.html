@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CAI//OPS — 网络安全 AI 控制台</title>
+<!-- 字体加载：Google Fonts 仅作增强（异步加载，media=print 不阻塞首屏）。
+     网络不可达时立即以系统字体渲染，配合 css 中的中文字体兜底栈，不会白屏。 -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+</noscript>
+<link rel="stylesheet" href="css/style.css?v=20260916r1">
+</head>
+<body>
+
+  <!-- ══════════ HEADER ══════════ -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">⬡</span>
+      <h1 class="brand-title">CAI<span class="brand-slash">//</span>OPS</h1>
+      <span class="brand-sub">网络安全 AI 控制台</span>
+    </div>
+    <div class="topbar-right">
+      <div id="health-badge" class="health-badge" title="API 状态">
+        <span id="health-dot" class="health-dot"></span>
+        <span id="health-text">连接中…</span>
+      </div>
+      <button id="btn-settings" class="btn btn-sm" title="API 设置">⚙ API 设置</button>
+      <button id="btn-bank" class="btn btn-sm btn-accent" title="题库构建">⬡ 题库构建</button>
+      <button id="btn-qbank" class="btn btn-sm" title="题库管理（数据库）">🗄 题库管理</button>
+    </div>
+  </header>
+
+  <!-- ══════════ MAIN GRID ══════════ -->
+  <div class="layout">
+
+    <!-- ───── LEFT SIDEBAR ───── -->
+    <aside class="sidebar">
+      <button id="btn-new-session" class="btn btn-accent btn-block btn-lg">＋ 新建会话</button>
+
+      <div class="side-block">
+        <div class="side-title">会话</div>
+        <ul id="session-list" class="session-list">
+          <li class="empty-hint">暂无会话</li>
+        </ul>
+      </div>
+
+      <div class="side-block grow">
+        <details class="catalog" id="catalog-agents" open>
+          <summary>Agent 目录 <span id="agent-count" class="count-badge">0</span></summary>
+          <ul id="agent-list" class="agent-list">
+            <li class="empty-hint">加载中…</li>
+          </ul>
+        </details>
+        <details class="catalog" id="catalog-models">
+          <summary>模型 <span id="model-count" class="count-badge">0</span></summary>
+          <ul id="model-list" class="model-list">
+            <li class="empty-hint">加载中…</li>
+          </ul>
+        </details>
+      </div>
+    </aside>
+
+    <!-- ───── MAIN CHAT ───── -->
+    <main class="chat-panel">
+      <div id="chat-head" class="chat-head">
+        <div class="chat-head-left">
+          <span id="chat-agent" class="tag tag-ink">未选择 Agent</span>
+          <span id="chat-model" class="tag tag-outline">—</span>
+        </div>
+        <div id="chat-state" class="chat-state"></div>
+      </div>
+
+      <div id="chat-log" class="chat-log">
+        <div class="empty-state">
+          <div class="empty-glyph">⬡</div>
+          <div class="empty-title">CAI//OPS 控制台就绪</div>
+          <div class="empty-desc">新建一个会话，选择 Agent 与模型，开始你的 AI 渗透任务。</div>
+        </div>
+      </div>
+
+      <form id="composer" class="composer" autocomplete="off">
+        <div id="composer-attachments" class="composer-attachments hidden"></div>
+        <textarea id="input" rows="1" placeholder="输入指令 / 描述目标 · Ctrl+Enter 发送" spellcheck="false"></textarea>
+        <input type="file" id="chat-files" class="hidden" multiple>
+        <div class="composer-row">
+          <span id="composer-hint" class="composer-hint"></span>
+          <div class="composer-actions">
+            <button type="button" id="btn-attach" class="btn btn-sm btn-attach" title="上传附件">📎</button>
+            <button type="button" id="btn-stop" class="btn btn-danger hidden">■ 停止</button>
+            <button type="submit" id="btn-send" class="btn btn-accent btn-send">发送 ➔</button>
+          </div>
+        </div>
+      </form>
+    </main>
+
+    <!-- ───── RIGHT TRACE ───── -->
+    <aside class="trace-panel">
+      <section id="model-state-card" class="model-state-card" role="status" aria-live="polite" aria-atomic="true" aria-label="模型状态，仅显示执行元数据">
+        <div class="model-state-head">
+          <div class="model-state-title"><span aria-hidden="true">◆</span> 模型状态</div>
+          <span id="model-state-badge" class="model-state-badge model-state-idle">空闲</span>
+        </div>
+        <div class="model-state-phase">
+          <span class="model-state-caption">当前阶段</span>
+          <strong id="model-state-label">空闲</strong>
+        </div>
+        <dl class="model-state-grid">
+          <div class="model-state-field model-state-thinking-field">
+            <dt>Thinking 开关</dt>
+            <dd>
+              <span id="model-state-thinking" class="model-state-thinking model-state-thinking-not_applicable" data-mode="not_applicable">不适用</span>
+              <span id="model-state-thinking-meta" class="model-state-meta"></span>
+            </dd>
+          </div>
+          <div class="model-state-field">
+            <dt>Agent</dt>
+            <dd id="model-state-agent">—</dd>
+          </div>
+          <div class="model-state-field">
+            <dt>模型</dt>
+            <dd id="model-state-model">—</dd>
+          </div>
+          <div class="model-state-field">
+            <dt>耗时</dt>
+            <dd id="model-state-elapsed">0s</dd>
+          </div>
+        </dl>
+      </section>
+      <!-- 旁观 agent 推荐面板（specs/001-spectator-agent; 独立于对话流, FR-007） -->
+      <div id="spectator-wrap" class="spectator-wrap hidden">
+        <div class="spectator-head">
+          <span class="spectator-title">⬡ 旁观推荐</span>
+          <button id="spectator-close" class="spectator-close" title="忽略此推荐" aria-label="关闭">×</button>
+        </div>
+        <div id="spectator-topic" class="spectator-topic"></div>
+        <div id="spectator-card" class="spectator-card" role="status" aria-live="polite" aria-atomic="true"></div>
+      </div>
+      <div class="trace-head">
+        <span class="trace-title">Agent 实时追踪</span>
+        <span id="trace-live" class="tag tag-live hidden">● 运行中</span>
+      </div>
+      <div id="trace-log" class="trace-log">
+        <div class="empty-hint">运行任务后，Agent 的工具调用与推理步骤将实时显示在这里。</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ══════════ NEW SESSION MODAL ══════════ -->
+  <div id="modal-new" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card card">
+      <div class="modal-title">新建会话</div>
+
+      <label class="field-label" for="sel-agent">Agent</label>
+      <select id="sel-agent" class="field-select"></select>
+
+      <label class="field-label" for="inp-base-url">BASE URL（模型 API 端点）</label>
+      <input id="inp-base-url" class="field-input" type="url" placeholder="https://api.deepseek.com"
+             spellcheck="false">
+
+      <label class="field-label" for="inp-provider-key">API 密钥</label>
+      <input id="inp-provider-key" class="field-input" type="password"
+             placeholder="留空 = 使用 .env 全局配置" spellcheck="false">
+
+      <div class="fetch-row">
+        <button id="btn-fetch-models" class="btn btn-accent btn-block">⬆ 获取模型</button>
+        <span id="fetch-status" class="fetch-status"></span>
+      </div>
+
+      <label class="field-label" for="sel-model">模型</label>
+      <select id="sel-model" class="field-select">
+        <option value="">— 先获取模型列表 —</option>
+      </select>
+
+      <label class="field-check">
+        <input type="checkbox" id="chk-stateful" checked>
+        <span>stateful（保留对话上下文）</span>
+      </label>
+
+      <div class="modal-actions">
+        <button id="btn-cancel-modal" class="btn btn-ghost">取消</button>
+        <button id="btn-create-session" class="btn btn-accent">创建 ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ SETTINGS MODAL ══════════ -->
+  <div id="modal-settings" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card card">
+      <div class="modal-title">API 设置</div>
+
+      <label class="field-label" for="inp-api-key">API 密钥（可选，X-CAI-API-Key）</label>
+      <input id="inp-api-key" class="field-input" type="password" placeholder="留空 = 使用 API 的 dev 模式">
+
+      <!-- 旁观 agent provider 配置（specs/001-spectator-agent T030/T033: 手动配置模式） -->
+      <div class="settings-divider"></div>
+      <div class="settings-section-title">⬡ 旁观 Agent · 意图评估 API（手动配置）</div>
+
+      <label class="field-label" for="spectator-base-url">BASE URL <span class="field-required">必填</span></label>
+      <input id="spectator-base-url" class="field-input" type="url"
+             placeholder="https://api.deepseek.com" spellcheck="false">
+
+      <label class="field-label" for="spectator-api-key">API 密钥 <span class="field-required">必填</span></label>
+      <input id="spectator-api-key" class="field-input" type="password"
+             placeholder="必填" spellcheck="false">
+
+      <div class="fetch-row">
+        <button type="button" id="btn-spectator-fetch" class="btn btn-accent btn-block">⬆ 获取模型</button>
+        <span id="spectator-fetch-status" class="fetch-status"></span>
+      </div>
+
+      <label class="field-label" for="spectator-model">模型 <span class="field-required">必填</span></label>
+      <select id="spectator-model" class="field-select">
+        <option value="">— 先填 BASE URL + 密钥，点击「获取模型」 —</option>
+      </select>
+
+      <label class="field-check" for="chk-spectator-clear-key">
+        <input type="checkbox" id="chk-spectator-clear-key">
+        <span>仅清除已保存密钥</span>
+      </label>
+      <div class="spectator-clearall-row">
+        <button type="button" id="btn-spectator-clear-all" class="btn btn-ghost btn-sm">清除全部配置</button>
+      </div>
+      <div id="spectator-status" class="fetch-status"></div>
+
+      <div class="modal-actions">
+        <button id="btn-close-settings" class="btn btn-ghost">关闭</button>
+        <button id="btn-save-settings" class="btn btn-accent">保存 ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ Q BANK MANAGEMENT (PostgreSQL) ══════════ -->
+  <div id="modal-qbank" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card card modal-qbank-card">
+      <div class="modal-title">📊 题库管理 <span style="font-weight:400;font-size:0.75rem;color:var(--muted);margin-left:8px;">PostgreSQL</span></div>
+      <div id="qbank-stats" class="qbank-stats"></div>
+      <details class="qbank-create">
+        <summary>＋ 新建题目</summary>
+        <div class="qbank-create-form">
+          <label class="field-label">题面</label>
+          <textarea id="qbank-statement" class="field-textarea" rows="3" placeholder="输入题面内容" spellcheck="false"></textarea>
+          <label class="field-label">成功判据 <span style="font-weight:400;color:var(--muted);">(JSON)</span></label>
+          <textarea id="qbank-criteria" class="field-textarea" rows="2" placeholder='{"criteria":[{"type":"flag","value":"flag{...}"}],"match":"all"}' spellcheck="false">{"criteria":[{"type":"flag","value":"flag{example}"}],"match":"all"}</textarea>
+          <label class="field-label">附件 <span style="font-weight:400;color:var(--muted);">(可选，多选 · 单文件 ≤100MiB)</span></label>
+          <input type="file" id="qbank-files" class="field-input" multiple>
+          <label class="field-label">Agent <span style="font-weight:400;color:var(--muted);">(可选，默认 one_tool_agent)</span></label>
+          <select id="qbank-agent" class="field-select"></select>
+
+          <label class="field-label">BASE URL <span style="font-weight:400;color:var(--muted);">(可选，自定义 provider)</span></label>
+          <input id="qbank-base-url" class="field-input" type="url" placeholder="https://api.deepseek.com" spellcheck="false">
+
+          <label class="field-label">API 密钥 <span style="font-weight:400;color:var(--muted);">(可选，留空 = .env 全局配置)</span></label>
+          <input id="qbank-api-key" class="field-input" type="password" placeholder="sk-..." spellcheck="false">
+
+          <div class="fetch-row">
+            <button id="btn-qbank-fetch" class="btn btn-accent btn-block">⬆ 获取模型</button>
+            <span id="qbank-fetch-status" class="fetch-status"></span>
+          </div>
+
+          <label class="field-label">模型 <span style="font-weight:400;color:var(--muted);">(必选)</span></label>
+          <select id="qbank-model" class="field-select">
+            <option value="">— 先点击「获取模型」加载列表 —</option>
+          </select>
+
+          <button id="btn-qbank-create" class="btn btn-accent btn-block" style="margin-top:8px;">创建题目</button>
+          <div id="qbank-create-status" class="bank-status"></div>
+        </div>
+      </details>
+      <div id="qbank-list" class="qbank-list"><div class="empty-hint">加载中…</div></div>
+      <div class="modal-actions">
+        <button id="btn-qbank-refresh" class="btn btn-ghost">🔄 刷新</button>
+        <button id="btn-cancel-qbank" class="btn btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ Q BANK DETAIL (PostgreSQL) ══════════ -->
+  <div id="modal-qbank-detail" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card card modal-qbank-detail-card">
+      <div class="modal-title" id="qbank-detail-title">题目详情</div>
+      <div id="qbank-detail-body" class="qbank-detail-body"><div class="empty-hint">加载中…</div></div>
+      <div class="modal-actions">
+        <button id="btn-close-qbank-detail" class="btn btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ QUESTION BANK MODAL ══════════ -->
+  <div id="modal-bank" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card card modal-bank-card">
+      <div class="modal-title">题库构建</div>
+
+      <label class="field-label" for="bank-agent">Agent</label>
+      <select id="bank-agent" class="field-select"></select>
+
+      <label class="field-label" for="bank-base-url">BASE URL（模型 API 端点）</label>
+      <input id="bank-base-url" class="field-input" type="url" placeholder="https://api.deepseek.com" spellcheck="false">
+
+      <label class="field-label" for="bank-api-key">API 密钥</label>
+      <input id="bank-api-key" class="field-input" type="password" placeholder="留空 = 使用 .env 全局配置" spellcheck="false">
+
+      <div class="fetch-row">
+        <button id="btn-bank-fetch" class="btn btn-accent btn-block">⬆ 获取模型</button>
+        <span id="bank-fetch-status" class="fetch-status"></span>
+      </div>
+
+      <label class="field-label" for="bank-model">模型</label>
+      <select id="bank-model" class="field-select">
+        <option value="">— 先点击「获取模型」加载列表 —</option>
+      </select>
+
+      <label class="field-label" for="bank-problem">题目</label>
+      <textarea id="bank-problem" class="field-textarea" rows="4"
+                placeholder="输入 CAI 需要解答的题面与目标" spellcheck="false"></textarea>
+
+      <label class="field-label" for="bank-refs">参考资料（每段一行 / 空行分隔）</label>
+      <textarea id="bank-refs" class="field-textarea" rows="5"
+                placeholder="参考答案、Writeup、附件内容、环境说明等" spellcheck="false"></textarea>
+
+      <div class="bank-status" id="bank-status"></div>
+
+      <div class="modal-actions">
+        <button id="btn-cancel-bank" class="btn btn-ghost">取消</button>
+        <button id="btn-build-bank" class="btn btn-accent">构建 ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ BANK RESULT MODAL ══════════ -->
+  <div id="modal-bank-result" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card card modal-bank-card">
+      <div class="modal-title" id="bank-result-title">构建结果</div>
+      <div id="bank-result-body" class="bank-result-body"></div>
+      <div class="modal-actions">
+        <button id="btn-close-bank-result" class="btn btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+<script src="vendor/marked.min.js"></script>
+<script src="js/app.js?v=20260917r1"></script>
+</body>
+</html>

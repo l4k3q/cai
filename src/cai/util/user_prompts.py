@@ -1271,6 +1271,9 @@ run_sudo_command = ensure_sudo_credentials
 # CAI_AVOID_SUDO=true rejects sudo/su/pkexec/doas regardless of YOLO.
 #
 # Only active in CLI headless mode (CAI_TUI_MODE != "true").
+# API mode (CAI_API_MODE=true) has no terminal to render the prompt, so the
+# guard is disabled there too — otherwise the headless fallback defaults to
+# "cancel" and surfaces a spurious "Command cancelled by user" error.
 #
 # Interactive choice uses questionary's blocking ``.ask()`` from a worker
 # thread (``asyncio.to_thread``) so a second prompt after sudo/getpass does
@@ -1560,6 +1563,8 @@ def avoid_sudo_command_blocked(command: str) -> tuple[bool, str]:
 
 
 def _is_guard_enabled() -> bool:
+    if os.getenv("CAI_API_MODE", "").lower() == "true":
+        return False
     if os.getenv("CAI_TUI_MODE", "").lower() == "true":
         return False
     if _yolo_enabled():

@@ -53,6 +53,10 @@ class CreateSessionRequest(BaseModel):
     model: str | None = None
     stateful: bool = True
     metadata: Dict[str, Any] | None = None
+    # Optional per-session provider override. When provided, the session uses
+    # this base URL / API key instead of the global .env configuration.
+    base_url: str | None = None
+    api_key: str | None = None
 
 
 class RunResultPayload(BaseModel):
@@ -64,10 +68,22 @@ class RunResultPayload(BaseModel):
     output_guardrails: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class AttachmentPayload(BaseModel):
+    """聊天/提问附带的资料元信息（文本已提取，供 Agent 阅读 + 参与指纹匹配）."""
+    filename: str
+    sha256: str | None = None        # compute_content_fingerprint 结果
+    material_type: str | None = None  # source/pcap/image/archive/writeup/environment
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    text: str | None = None          # 可读类型提取出的文本
+
+
 class InferenceRequest(BaseModel):
     input: str | List[Dict[str, Any]]
+    content_kind: str | None = None  # "chat" | "question_statement" (§7.4)
     context: Dict[str, Any] | None = None
     max_turns: int | float | None = None
+    materials: List[AttachmentPayload] | None = None  # 对话框上传的附件
     # Optional: launch one or more MCP SSE servers for this request (ephemeral)
     class MCPSseServer(BaseModel):
         url: str
@@ -102,7 +118,8 @@ class AgentToolModel(BaseModel):
 
 
 class AgentMetadataModel(BaseModel):
-    name: str
+    name: str  # display name
+    id: str | None = None  # canonical/internal name accepted by create_session
     description: str | None = None
     type: str = "agent"  # agent | pattern
     pattern_type: str | None = None
@@ -137,6 +154,27 @@ class ModelInfoModel(BaseModel):
 
 class ModelsResponse(BaseModel):
     models: list[ModelInfoModel]
+
+
+class ProviderFetchRequest(BaseModel):
+    """Fetch the model list from a user-supplied provider (base URL + API key).
+
+    ``base_url`` / ``api_key`` are optional: when blank, the endpoint falls back
+    to the global ``.env`` configuration (ANTHROPIC_API_BASE / OPENAI_API_BASE
+    and ANTHROPIC_API_KEY / OPENAI_API_KEY).
+    """
+
+    base_url: str | None = None
+    api_key: str | None = None
+
+
+class ProviderFetchModel(BaseModel):
+    id: str
+    name: str | None = None
+
+
+class ProviderFetchResponse(BaseModel):
+    models: list[ProviderFetchModel]
 
 
 class ReloadRequest(BaseModel):

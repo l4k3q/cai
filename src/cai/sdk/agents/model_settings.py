@@ -65,6 +65,9 @@ class ModelSettings:
     max_tokens: int | None = None
     """The maximum number of output tokens to generate."""
 
+    reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
+    """Reasoning effort override. DeepSeek role-based policy applies when omitted."""
+
     store: bool | None = None
     """Whether to store the generated model response for later retrieval.
     Defaults to True if not provided."""

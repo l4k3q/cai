@@ -2,13 +2,182 @@
 
 from __future__ import annotations
 
+# Monkeypatch traceback formatting to avoid Python 3.12 co_positions() slow path,
+# which can block the asyncio event loop when litellm formats exceptions.
+import sys as _sys
+import traceback as _tb
+
+_orig_format_exc = _tb.format_exc
+_orig_format_exception = _tb.format_exception
+
+
+def _safe_format_exc(limit: int = 10, chain: bool = True):  # noqa: ANN001
+    return _orig_format_exc(limit=limit, chain=chain)
+
+
+def _safe_format_exception(*args: object, **kwargs: object):
+    kwargs.setdefault("limit", 10)
+    return _orig_format_exception(*args, **kwargs)
+
+
+# The original _walk_tb_with_full_positions uses co_positions() which is
+# pathologically slow on large code objects (e.g. litellm).  Keep the same
+# return shape (frame, positions_tuple) but skip co_positions().
+def _safe_walk_tb_with_full_positions(tb):  # noqa: ANN001
+    for frame, lineno in _tb.walk_tb(tb):
+        yield frame, (lineno, None, None, None)
+
+
+_tb._walk_tb_with_full_positions = _safe_walk_tb_with_full_positions
+_tb.format_exc = _safe_format_exc
+_tb.format_exception = _safe_format_exception
+
+
+# Patch extract_stack/format_stack so litellm's failure logging does not
+# call co_positions() on large code objects.  We still return valid line numbers
+# but omit column information.
+def _safe_extract_stack(f=None, limit=None):  # noqa: ANN001
+    if f is None:
+        f = _sys._getframe().f_back
+    result = []
+    while f is not None and (limit is None or len(result) < limit):
+        code = f.f_code
+        result.append(_tb.FrameSummary(code.co_filename, f.f_lineno, code.co_name))
+        f = f.f_back
+    return _tb.StackSummary.from_list(result)
+
+
+def _safe_format_stack(f=None, limit: int = 10):  # noqa: ANN001
+    return _tb.format_list(_safe_extract_stack(f, limit))
+
+
+_tb.extract_stack = _safe_extract_stack
+_tb.format_stack = _safe_format_stack
+
+
+# LiteLLM's exception constructors build a fake ``httpx.Response`` and call
+# ``openai.APIStatusError.__init__``; on Python 3.12 this can trigger a slow
+# body read, URL parse hang, or worse.  Replace the constructors of all
+# LiteLLM exception classes so they finish instantly.
+try:
+    import litellm.exceptions as _le  # noqa: F401
+
+    # Default status codes for the most common litellm exception classes.
+    _status_code_map = {
+        "BadRequestError": 400,
+        "AuthenticationError": 401,
+        "PermissionDeniedError": 403,
+        "NotFoundError": 404,
+        "RateLimitError": 429,
+        "ServiceUnavailableError": 503,
+        "BadGatewayError": 502,
+        "InternalServerError": 500,
+        "APIConnectionError": 500,
+        "APIError": 500,
+        "Timeout": 408,
+    }
+
+    def _make_fast_init(status_code):  # noqa: ANN001
+        def _fast_init(  # noqa: ANN001
+            self,
+            message,
+            **kwargs,
+        ):
+            self.status_code = status_code
+            self.message = message
+            # Carry over commonly used attributes so litellm's wrapper can read
+            # them without invoking the slow original __init__.
+            self.model = kwargs.get("model")
+            self.llm_provider = kwargs.get("llm_provider")
+            self.litellm_debug_info = kwargs.get("litellm_debug_info")
+            self.max_retries = kwargs.get("max_retries")
+            self.num_retries = kwargs.get("num_retries")
+            self.response = kwargs.get("response")
+            # Do not create a fake httpx.Response/Request here; that is where
+            # the hangs come from.  Store only a string message.
+            Exception.__init__(self, message)
+
+        return _fast_init
+
+    for _exc_name in dir(_le):
+        _exc_cls = getattr(_le, _exc_name)
+        if not isinstance(_exc_cls, type):
+            continue
+        if "Error" not in _exc_name and _exc_name not in ("Timeout",):
+            continue
+        _status = _status_code_map.get(_exc_name, 500)
+        try:
+            _exc_cls.__init__ = _make_fast_init(_status)
+        except Exception:  # noqa: BLE001
+            pass
+except Exception:  # noqa: BLE001
+    pass
+
+
+# FrameSummary.__init__ calls linecache.getline() to read source lines.
+# For large third-party packages (litellm, openai, httpx), this can be slow or
+# even hang.  Force lookup_line=False and line="" so source lines are never
+# read during traceback formatting.
+_orig_framesummary_init = _tb.FrameSummary.__init__
+
+
+def _fast_framesummary_init(  # noqa: ANN001
+    self,
+    filename,
+    lineno,
+    name,
+    *,
+    lookup_line=True,  # noqa: ARG001
+    locals=None,  # noqa: A002
+    line=None,
+    **kwargs,
+):
+    # Never read source lines automatically.  If caller explicitly provided a
+    # line, keep it, otherwise use an empty string.
+    _orig_framesummary_init(
+        self,
+        filename,
+        lineno,
+        name,
+        lookup_line=False,
+        locals=locals,
+        line=line if line is not None else "",
+        **kwargs,
+    )
+
+
+_tb.FrameSummary.__init__ = _fast_framesummary_init
+
+
+# Safety net: make linecache.getline fast/ bounded.  If the file is large or
+# lives in site-packages, return an empty string rather than reading it.
+import linecache as _linecache  # noqa: E402
+
+_orig_linecache_getline = _linecache.getline
+
+
+def _safe_linecache_getline(filename: str, lineno: int, module_globals=None):  # noqa: ANN001
+    try:
+        # For installed packages with huge single files, skip reading entirely.
+        if "site-packages" in filename:
+            return ""
+    except Exception:  # noqa: BLE001
+        pass
+    return _orig_linecache_getline(filename, lineno, module_globals)
+
+
+_linecache.getline = _safe_linecache_getline
+
 import asyncio
 import importlib.metadata
 import os
 import secrets
+from pathlib import Path
 from typing import List
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Security, status
+import httpx
+
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Security, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import logging
@@ -18,6 +187,7 @@ import json as _json
 
 from .commands import CommandExecutor
 from .schemas import (
+    AttachmentPayload,
     AuthAddIpRequest,
     AuthAddIpResponse,
     AuthLoginRequest,
@@ -33,6 +203,9 @@ from .schemas import (
     InterruptResponse,
     ModelInfoModel,
     ModelsResponse,
+    ProviderFetchRequest,
+    ProviderFetchResponse,
+    ProviderFetchModel,
     HealthResponse,
     InferenceRequest,
     InferenceResponse,
@@ -57,6 +230,7 @@ from .schemas import (
 from .auth import AuthManager, InvalidCredentialsError, UserAlreadyExistsError
 from .sessions import SessionManager, SessionNotFoundError, summarize_run_result
 from .streaming import sse_stream_for_run, sse_stream_via_hooks, sse_stream_tokens_for_run
+from .question_bank import BankBuildRequest, BankBuildResponse
 
 # Py3.11+: ExceptionGroup/BaseExceptionGroup is builtin; for older Python fall back
 try:  # pragma: no cover - compatibility
@@ -89,6 +263,22 @@ def _format_exc(exc: Exception, max_sub: int = 3) -> str:
         return f"{exc.__class__.__name__}: {exc}"
     except Exception:
         return str(exc)
+
+
+def _format_attachments(materials) -> str:
+    """把聊天附件 payload 格式化为喂给 Agent 的文本块."""
+    if not materials:
+        return ""
+    parts = ["\n\n[Attached materials]"]
+    for m in materials:
+        name = m.filename or "unnamed"
+        mtype = m.material_type or "unknown"
+        size = f"{m.size_bytes} bytes" if m.size_bytes is not None else "unknown size"
+        if m.text:
+            parts.append(f"\n--- {name} ({mtype}, {size}) ---\n{m.text}")
+        else:
+            parts.append(f"\n--- {name} ({mtype}, {size}) ---\n[二进制文件，无法直接读取内容]")
+    return "\n".join(parts)
 
 
 def create_cai_api_app(
@@ -220,6 +410,17 @@ def create_cai_api_app(
     @app.get("/api/v1/health", response_model=HealthResponse, tags=["meta"])
     def healthcheck() -> HealthResponse:
         return HealthResponse(status="ok", version=_get_version())
+
+    @app.get("/api/v1/debug/model_calls", tags=["meta"])
+    def debug_model_calls():
+        """Return the currently in-flight litellm model calls."""
+        from cai.sdk.agents.models.chatcompletions.litellm_adapter import (
+            get_active_litellm_calls,
+        )
+
+        return {
+            "active_calls": get_active_litellm_calls(),
+        }
     
     @app.get("/api/tags", tags=["meta"])
     def get_tags() -> Dict[str, List[str]]:
@@ -354,6 +555,7 @@ def create_cai_api_app(
             agents.append(
                 {
                     "name": getattr(agent, "name", name),
+                    "id": name,
                     "description": getattr(agent, "description", None),
                     "type": a_type,
                     "pattern_type": str(pattern_type) if pattern_type else None,
@@ -420,6 +622,110 @@ def create_cai_api_app(
         result_models.sort(key=lambda x: (x["provider"] or "zzz", x["name"] or ""))
         return ModelsResponse(models=result_models)
 
+    @app.post(
+        "/api/v1/models/fetch",
+        response_model=ProviderFetchResponse,
+        tags=["catalog"],
+        dependencies=[Depends(_require_api_key)],
+    )
+    async def fetch_models_from_provider(
+        payload: ProviderFetchRequest,
+    ) -> ProviderFetchResponse:
+        """Fetch the model list from a user-supplied OpenAI-compatible provider.
+
+        Calls ``GET {base_url}/v1/models`` with both ``x-api-key`` and
+        ``Authorization: Bearer`` headers (Anthropic-compatible gateways accept
+        either). Returns the raw ``id`` list so the front-end can populate its
+        model selector for this specific provider.
+
+        ``base_url`` may include or omit the ``/v1`` suffix; when it already ends
+        in ``/v1`` we append ``/models`` directly (keeps it consistent with how
+        the litellm model layer treats ``api_base``, which expects the ``/v1``
+        path to be present).
+
+        When ``base_url`` / ``api_key`` are left blank, they fall back to the
+        global ``.env`` configuration (ANTHROPIC_API_BASE / OPENAI_API_BASE and
+        ANTHROPIC_API_KEY / OPENAI_API_KEY).
+        """
+        raw = (payload.base_url or "").strip().rstrip("/")
+        if not raw:
+            raw = (os.getenv("ANTHROPIC_API_BASE") or os.getenv("OPENAI_API_BASE") or "").strip().rstrip("/")
+        if not raw:
+            raise HTTPException(status_code=400, detail="base_url is required (and no .env fallback configured)")
+        if not (raw.startswith("http://") or raw.startswith("https://")):
+            raw = "https://" + raw
+
+        api_key = (payload.api_key or "").strip()
+        if not api_key:
+            api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+
+        if raw.endswith("/v1"):
+            url = f"{raw}/models"
+        else:
+            url = f"{raw}/v1/models"
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if api_key:
+            headers["x-api-key"] = api_key
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        try:
+            # Use a short timeout so a misbehaving/slow provider does not block
+            # the model selector for too long.
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+                resp = await client.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            # Graceful fallback: if the provider is unreachable, return the
+            # predefined models so the UI is not blocked.
+            import logging as _logging  # noqa: E402
+
+            _logging.getLogger("cai.api").warning(
+                f"Provider model fetch failed ({exc.__class__.__name__} at {url}); "
+                "falling back to predefined models."
+            )
+            from cai.repl.commands.model import get_all_predefined_models
+
+            fallback = get_all_predefined_models()
+            models = []
+            for m in fallback:
+                mid = m.get("name") or m.get("id")
+                if mid:
+                    models.append(ProviderFetchModel(id=mid, name=m.get("name") or mid))
+            return ProviderFetchResponse(models=models)
+
+        if resp.status_code != 200:
+            hint = ""
+            if resp.status_code in (401, 403):
+                hint = " — API key 无效或该端点需要鉴权，请检查 API KEY"
+            raise HTTPException(
+                status_code=400,
+                detail=f"Provider returned HTTP {resp.status_code} for {url}{hint}",
+            )
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Provider response was not valid JSON",
+            ) from exc
+
+        data = body.get("data", []) if isinstance(body, dict) else None
+        if data is None or not isinstance(data, list):
+            raise HTTPException(
+                status_code=400,
+                detail="Provider response missing a 'data' array of models",
+            )
+
+        models = []
+        for entry in data:
+            if isinstance(entry, dict) and entry.get("id"):
+                models.append(
+                    ProviderFetchModel(
+                        id=str(entry["id"]),
+                        name=str(entry.get("name") or entry["id"]),
+                    )
+                )
+        return ProviderFetchResponse(models=models)
+
     @app.get(
         "/api/v1/commands",
         response_model=CommandsResponse,
@@ -466,6 +772,8 @@ def create_cai_api_app(
             model_name=payload.model,
             stateful=payload.stateful,
             metadata=payload.metadata,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
         )
         return SessionDetailModel.model_validate(session.to_detail())
 
@@ -540,15 +848,19 @@ def create_cai_api_app(
         except SessionNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found") from exc
         
-        # First signal cancellation
-        signalled = session.interrupt()
-        # Then wait briefly for the task to exit
+        # Signal cancellation once and wait for at most five seconds.  The
+        # waiting helper deliberately does not block forever on a stuck client.
         waited = await session.interrupt_and_wait()
 
-        if signalled or waited:
+        if waited:
             return CancelTaskResponse(
                 cancelled=True,
                 message=f"Task in session {session_id} has been cancelled"
+            )
+        if session.interrupt():
+            return CancelTaskResponse(
+                cancelled=True,
+                message=f"Cancellation was signalled for task in session {session_id}"
             )
         else:
             return CancelTaskResponse(
@@ -645,6 +957,44 @@ def create_cai_api_app(
     # Removed UX title endpoint
 
     @app.post(
+        "/api/v1/chat-attachments",
+        response_model=List[AttachmentPayload],
+        tags=["inference"],
+        dependencies=[Depends(_require_api_key)],
+    )
+    async def upload_chat_attachments(
+        files: list[UploadFile] = File(...),
+    ) -> List[AttachmentPayload]:
+        """上传聊天附件：提取文本 + 计算内容指纹（不落库，仅用于本次会话）. """
+        from cai.question_bank.fingerprints import compute_content_fingerprint
+        from cai.question_bank.materials import (
+            MAX_FILE_SIZE,
+            extract_material_text,
+            infer_material_type,
+        )
+
+        results: List[AttachmentPayload] = []
+        for f in files:
+            content = await f.read()
+            if len(content) > MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"文件 {f.filename} 超过 {MAX_FILE_SIZE // 1024 // 1024} MiB 限制",
+                )
+            sha256 = compute_content_fingerprint(content)
+            mat_type = infer_material_type(f.filename or "", f.content_type or "")
+            text = extract_material_text(content, mat_type)
+            results.append(AttachmentPayload(
+                filename=f.filename or "",
+                sha256=sha256,
+                material_type=mat_type,
+                mime_type=f.content_type,
+                size_bytes=len(content),
+                text=text,
+            ))
+        return results
+
+    @app.post(
         "/api/v1/sessions/{session_id}/messages/stream",
         tags=["inference"],
         response_class=StreamingResponse,
@@ -660,12 +1010,94 @@ def create_cai_api_app(
         except SessionNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found") from exc
 
-        # Compose input with history if stateful; reuse SessionState internals
-        composed = session._compose_input(payload.input)  # noqa: SLF001 (intentional reuse)
+        logger = logging.getLogger(__name__)
 
-        # API requirement: underlying OpenAI chat completions must NOT stream.
-        # Implement streaming via RunHooks (non-streaming model calls) instead of Runner.run_streamed.
+        # --- Question Resolution (§6.1) ---
+        resolution = None
+        solution_context = None
+
+        if (payload.content_kind == "question_statement"
+            and not session.resolution_locked
+            and isinstance(payload.input, str)):
+            try:
+                from cai.question_bank.resolver import QuestionResolver
+                from cai.question_bank.repository import QuestionRepository
+
+                resolver = QuestionResolver(QuestionRepository())
+                material_fps = [m.sha256 for m in (payload.materials or []) if m.sha256]
+                resolution = await resolver.resolve(payload.input, material_fingerprints=material_fps)
+
+                session.resolution_status = resolution.status
+                session.resolution_locked = True
+                session.question_id = str(resolution.question_id) if resolution.question_id else None
+
+                if resolution.status == "matched" and resolution.method_status == "usable":
+                    session.learning_mode = "explain"
+                    session.solution_method_id = str(resolution.solution_method_id) if resolution.solution_method_id else None
+
+                    # Load solution from DB and format as teaching context
+                    repo2 = QuestionRepository()
+                    async with repo2.session() as sess2:
+                        sol = await repo2.get_usable_solution(sess2, resolution.question_id)
+                        if sol is not None:
+                            steps = sol.steps or []
+                            q = await repo2.get_question(sess2, resolution.question_id)
+                            steps_text = []
+                            for s in sorted(steps, key=lambda x: x.ordinal):
+                                steps_text.append(
+                                    "Step {}: {}\n  Why: {}\n  Principle: {}\n  Action: {}\n  Result: {}".format(
+                                        s.ordinal, s.goal, s.why, s.principle, s.action, s.result
+                                    )
+                                )
+                            q_preview = (q.statement_raw or "")[:200] if q else "N/A"
+                            approach = sol.overall_approach or "(none)"
+                            solution_context = (
+                                "[Question Bank Match] Solution found.\n\n"
+                                "Problem: {}\n\n"
+                                "Overall Approach: {}\n\n"
+                                "Teaching Steps:\n{}\n\n"
+                                "Teach based on this solution. Start with approach overview, "
+                                "then walk through each step. User may ask about specific steps "
+                                "or request a replay."
+                            ).format(q_preview, approach, chr(10).join(steps_text))
+
+                elif resolution.status == "matched":
+                    session.learning_mode = "live_solve"
+                else:
+                    session.learning_mode = "live_solve"
+            except Exception:
+                logger.exception("Question resolution failed, falling through to normal chat")
+
+        # Compose input with history if stateful
+        composed = session._compose_input(payload.input)  # noqa: SLF001
+
+        # Inject uploaded attachment content into the agent input (readable files only)
+        attachment_block = _format_attachments(payload.materials)
+        if attachment_block and isinstance(composed, list) and composed:
+            last = composed[-1]
+            if isinstance(last, dict) and last.get("role") == "user":
+                content = last.get("content")
+                if isinstance(content, str):
+                    last["content"] = content + attachment_block
+                else:
+                    composed.append({"role": "user", "content": attachment_block})
+            else:
+                composed.append({"role": "user", "content": attachment_block})
+
+        # Inject solution context into agent input
+        if solution_context:
+            if isinstance(composed, list):
+                composed = [{"role": "system", "content": solution_context}] + composed
+            elif isinstance(composed, str):
+                composed = [{"role": "system", "content": solution_context},
+                            {"role": "user", "content": composed}]
+
         async def _gen():
+            # Emit resolution event before agent stream
+            if resolution is not None:
+                from .streaming import _sse
+                yield _sse("question_resolution", resolution.model_dump(mode="json"))
+
             async for chunk in sse_stream_via_hooks(
                 session.agent,
                 composed,
@@ -674,21 +1106,11 @@ def create_cai_api_app(
                 session=session,
             ):
                 yield chunk
-            # After finishing, persist history/state so subsequent calls see full context.
-            # We can't rely on agent.model.message_history (not all models expose it),
-            # so we run a non-streaming pass to reconstruct the conversation input list.
+            # --- spectator after-round hook (specs/001-spectator-agent) ---
             try:
-                from cai.sdk.agents.run import Runner, DEFAULT_MAX_TURNS as _DEF_TURNS
-
-                recon_result = await Runner.run(
-                    session.agent,
-                    composed,
-                    context=payload.context,
-                    max_turns=int(payload.max_turns) if isinstance(payload.max_turns, (int, float)) else _DEF_TURNS,
-                )
-                session.history = recon_result.to_input_list()
+                from cai.api.spectator_routes import spectator_after_round
+                spectator_after_round(session, session_id, payload.input)
             except Exception:
-                # Best-effort only; if it fails we keep the previous history.
                 pass
 
         headers = {
@@ -1025,5 +1447,73 @@ def create_cai_api_app(
             max_len=100,
         )
         return UXTitleLiteResponse(title=title)
+
+    # File-based question bank build (§7.1): problem + references → reproduction
+    # + summarization, persisted to ~/.cai/question_bank/{id}.json.
+    from cai.api.question_bank import (
+        build_question_bank,
+        list_banks,
+        load_bank,
+    )
+
+    @app.post(
+        "/api/v1/question-bank/build",
+        response_model=BankBuildResponse,
+        tags=["question-bank"],
+    )
+    async def question_bank_build(payload: BankBuildRequest) -> BankBuildResponse:
+        """同步构建题库条目（复现 + 思路总结）。"""
+        return await build_question_bank(payload)
+
+    @app.get(
+        "/api/v1/question-bank/banks",
+        tags=["question-bank"],
+    )
+    async def question_bank_list() -> dict[str, Any]:
+        return {"items": list_banks()}
+
+    @app.get(
+        "/api/v1/question-bank/banks/{bank_id}",
+        response_model=BankBuildResponse,
+        tags=["question-bank"],
+    )
+    async def question_bank_get(bank_id: str) -> BankBuildResponse:
+        entry = load_bank(bank_id)
+        if entry is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="题库条目不存在")
+        return entry
+
+    # PostgreSQL-backed question bank v2 routes (§7.4)
+    from cai.api.question_bank_routes import router as qb_v2_router
+
+    app.include_router(qb_v2_router)
+    # --- spectator routes (specs/001-spectator-agent) ---
+    from cai.api.spectator_routes import config_router as spectator_config_router
+    from cai.api.spectator_routes import router as spectator_router
+    app.include_router(spectator_router)
+    app.include_router(spectator_config_router)
+
+
+    # Auto-create PostgreSQL tables for the question bank v2 (idempotent).
+    # If Postgres/MinIO is not running, log a warning instead of crashing.
+    @app.on_event("startup")
+    async def _init_question_bank_tables() -> None:  # noqa: ANN202
+        try:
+            from cai.question_bank.repository import QuestionRepository
+            repo = QuestionRepository()
+            await repo.create_tables()
+            await repo.close()
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger("cai.api").warning(
+                "Question bank PostgreSQL tables not initialized: %s", exc
+            )
+
+    # Serve the bundled Web UI (webui/) at "/" when present.
+    # Disable with CAI_WEBUI=0; skipped automatically if webui/ is absent.
+    _webui_dir = Path(__file__).resolve().parents[3] / "webui"
+    if os.getenv("CAI_WEBUI", "1").lower() in ("1", "true", "yes") and _webui_dir.is_dir():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=_webui_dir, html=True), name="webui")
 
     return app

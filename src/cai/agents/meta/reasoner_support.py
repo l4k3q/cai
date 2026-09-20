@@ -58,12 +58,9 @@ def create_reasoner_agent(
         )
 
     # Pass reasoning_effort via model_settings for o1/o3 models.
-    # ModelSettings doesn't declare reasoning_effort as a field, but
-    # openai_chatcompletions.py checks hasattr(model_settings, "reasoning_effort")
-    # so we set it dynamically.
     model_settings = ModelSettings()
     if any(x in model for x in ["o1", "o3"]):
-        model_settings.reasoning_effort = "high"  # type: ignore[attr-defined]
+        model_settings.reasoning_effort = "high"
 
     # Create and return the reasoner agent
     return Agent(

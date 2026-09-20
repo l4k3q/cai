@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator, Dict, List, Tuple
+import os
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+from typing import Any, Dict, List
 
 from cai.sdk.agents.items import (
     HandoffOutputItem,
@@ -19,20 +22,57 @@ from cai.sdk.agents.items import (
     ToolCallItem,
     ToolCallOutputItem,
 )
+from cai.sdk.agents.lifecycle import RunHooks
 from cai.sdk.agents.result import RunResult, RunResultStreaming
+from cai.sdk.agents.run import DEFAULT_MAX_TURNS, Runner
+from cai.sdk.agents.models.chatcompletions.litellm_adapter import (
+    resolve_deepseek_thinking_policy,
+)
 from cai.sdk.agents.stream_events import (
     AgentUpdatedStreamEvent,
     RawResponsesStreamEvent,
     RunItemStreamEvent,
-    StreamEvent,
 )
-from cai.sdk.agents.lifecycle import RunHooks
-from cai.sdk.agents.run import Runner, DEFAULT_MAX_TURNS
 
 
 def _sse(event: str, data: Dict[str, Any]) -> bytes:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
+
+
+def _sse_heartbeat() -> bytes:
+    """Keep proxies and browsers from treating a quiet agent run as a dead stream."""
+    return b": heartbeat\n\n"
+
+
+def _safe_model_state(starting_agent: Any, state: str, label: str, **extra: Any) -> Dict[str, Any]:
+    """Build public execution metadata without exposing hidden reasoning text."""
+    model = getattr(starting_agent, "model", None)
+    model_name = str(getattr(model, "model", model) or "")
+    agent_name = getattr(starting_agent, "name", None)
+    agent_type = getattr(model, "agent_type", None)
+    model_settings = getattr(starting_agent, "model_settings", None)
+    if model_settings is None:
+        model_settings = type("ModelSettingsView", (), {"reasoning_effort": None})()
+    thinking = resolve_deepseek_thinking_policy(
+        model_name=model_name,
+        model_settings=model_settings,
+        agent_name=agent_name,
+        agent_type=agent_type,
+    )
+    payload = {
+        "state": state,
+        "label": label,
+        "agent": agent_name,
+        "model": model_name,
+        "thinking": {
+            "mode": thinking["mode"],
+            "effort": thinking["effort"],
+            "source": thinking["source"],
+        },
+    }
+    payload.update(extra)
+    return payload
 
 
 def _step_from_run_item_event(evt: RunItemStreamEvent) -> Dict[str, Any] | None:
@@ -159,7 +199,14 @@ class _SSEHooks(RunHooks[Any]):
         })
 
 
-async def sse_stream_via_hooks(starting_agent, input_items, *, context=None, max_turns: int | float | None = None, session: Any | None = None) -> AsyncIterator[bytes]:
+async def sse_stream_via_hooks(
+    starting_agent,
+    input_items,
+    *,
+    context=None,
+    max_turns: int | float | None = None,
+    session: Any | None = None,
+) -> AsyncIterator[bytes]:
     """SSE stream built on top of non-streaming model runs, using RunHooks.
 
     - No token streaming; emits high-level steps only.
@@ -179,30 +226,131 @@ async def sse_stream_via_hooks(starting_agent, input_items, *, context=None, max
             hooks=hooks,
         )
 
+    heartbeat_seconds = max(float(os.getenv("CAI_API_HEARTBEAT_SECONDS", "5")), 0.1)
+    # A model call may legitimately spend several minutes reasoning over a
+    # large obfuscated/crypto prompt without emitting a hook event.  The old
+    # 180-second default cancelled those valid runs. Keep a finite safety net,
+    # but make it long enough for complex CTF tasks and report progress below.
+    idle_timeout_seconds = max(float(os.getenv("CAI_API_IDLE_TIMEOUT", "600")), heartbeat_seconds)
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    last_activity = loop.time()
+
     task = asyncio.create_task(_run_agent())
     if session is not None:
         try:
-            session.set_running_task(task)
+            if not session.try_set_running_task(task):
+                task.cancel()
+                yield _sse("error", {"message": "该会话已有任务在运行，请先停止或等待完成"})
+                return
         except Exception:
-            pass
+            task.cancel()
+            raise
 
     try:
+        yield _sse(
+            "model_state",
+            _safe_model_state(starting_agent, "preparing", "正在准备模型请求", elapsed_seconds=0),
+        )
+        yield _sse(
+            "status",
+            {"type": "started", "message": "Agent 已启动，正在准备模型请求"},
+        )
         while True:
             if task.done() and queue.empty():
                 break
+
+            idle_remaining = idle_timeout_seconds - (loop.time() - last_activity)
+            if idle_remaining <= 0:
+                task.cancel()
+                yield _sse(
+                    "model_state",
+                    _safe_model_state(
+                        starting_agent,
+                        "failed",
+                        "模型长时间无响应",
+                        elapsed_seconds=int(loop.time() - started_at),
+                    ),
+                )
+                yield _sse(
+                    "error",
+                    {"message": f"Agent 超过 {idle_timeout_seconds:g} 秒无响应，任务已取消"},
+                )
+                return
+
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.2)
+                item = await asyncio.wait_for(
+                    queue.get(), timeout=min(heartbeat_seconds, idle_remaining)
+                )
             except asyncio.TimeoutError:
+                elapsed = int(loop.time() - started_at)
+                policy = _safe_model_state(starting_agent, "thinking", "模型正在思考")
+                if policy["thinking"]["mode"] != "enabled":
+                    policy["state"] = "generating"
+                    policy["label"] = "模型正在生成回答"
+                policy["elapsed_seconds"] = elapsed
+                yield _sse("model_state", policy)
+                yield _sse(
+                    "status",
+                    {
+                        "type": "waiting",
+                        "message": f"模型仍在处理中（已等待约 {elapsed} 秒）",
+                        "elapsed_seconds": elapsed,
+                    },
+                )
+                yield _sse_heartbeat()
                 continue
+
+            last_activity = loop.time()
             steps.append(item)
+            if item.get("type") == "tool_call":
+                yield _sse(
+                    "model_state",
+                    _safe_model_state(
+                        starting_agent,
+                        "tool_running",
+                        "Agent 正在调用工具",
+                        elapsed_seconds=int(loop.time() - started_at),
+                        agent=item.get("agent") or getattr(starting_agent, "name", None),
+                    ),
+                )
+            elif item.get("type") == "tool_output":
+                resumed = _safe_model_state(starting_agent, "thinking", "工具完成，模型继续思考")
+                if resumed["thinking"]["mode"] != "enabled":
+                    resumed["state"] = "generating"
+                    resumed["label"] = "工具完成，模型继续生成"
+                resumed["elapsed_seconds"] = int(loop.time() - started_at)
+                yield _sse("model_state", resumed)
             yield _sse("reasoning_step", item)
-    finally:
-        result: RunResult = await task
+
+        if task.cancelled():
+            yield _sse(
+                "model_state",
+                _safe_model_state(starting_agent, "cancelled", "任务已取消"),
+            )
+            yield _sse("error", {"message": "任务已取消"})
+            return
+        exc = task.exception()
+        if exc is not None:
+            yield _sse(
+                "model_state",
+                _safe_model_state(starting_agent, "failed", "模型调用失败"),
+            )
+            yield _sse("error", {"message": f"{exc.__class__.__name__}: {exc}"})
+            return
+
+        result: RunResult = task.result()
+
+        # Persist the result from this exact run.  The API route previously ran
+        # Runner.run() a second time after yielding `final`, doubling provider
+        # calls and keeping the browser waiting when that hidden run stalled.
         if session is not None:
             try:
-                session.set_running_task(None)
+                session.history = result.to_input_list()
+                session.updated_at = datetime.now(timezone.utc)
             except Exception:
                 pass
+
         # Extract last assistant text message
         for it in result.new_items:
             if isinstance(it, MessageOutputItem):
@@ -214,7 +362,11 @@ async def sse_stream_via_hooks(starting_agent, input_items, *, context=None, max
             final_output = final_output.model_dump(exclude_unset=True)
         # Emit a final message step so simple chats (no tools) still produce reasoning steps
         if last_message:
-            msg_step = {"type": "message", "agent": getattr(result.last_agent, "name", None), "text": last_message}
+            msg_step = {
+                "type": "message",
+                "agent": getattr(result.last_agent, "name", None),
+                "text": last_message,
+            }
             steps.append(msg_step)
             yield _sse("reasoning_step", msg_step)
         # Persist steps into session for later UX summaries
@@ -223,7 +375,32 @@ async def sse_stream_via_hooks(starting_agent, input_items, *, context=None, max
                 session.last_steps = steps
             except Exception:
                 pass
-        yield _sse("final", {"steps": steps, "final_message": last_message, "final_output": final_output})
+        yield _sse(
+            "model_state",
+            _safe_model_state(
+                starting_agent,
+                "completed",
+                "回答已完成",
+                elapsed_seconds=int(loop.time() - started_at),
+                agent=getattr(result.last_agent, "name", None),
+            ),
+        )
+        yield _sse(
+            "final",
+            {
+                "steps": steps,
+                "final_message": last_message,
+                "final_output": final_output,
+            },
+        )
+    finally:
+        if not task.done():
+            task.cancel()
+        if session is not None:
+            try:
+                session.clear_running_task(task)
+            except Exception:
+                pass
 
 
 def _token_event_from_raw(raw_evt: Any) -> Dict[str, Any] | None:
