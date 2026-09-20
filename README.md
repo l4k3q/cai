@@ -15,9 +15,9 @@
   - Markdown 回复渲染
   - 本地题库与教学流程
 
-<div align="center">
 ## Cybersecurity AI · `CAI`
 
+<div align="center">
 **The open framework that established Cybersecurity AI as a research domain.**<br>
 *Archived. The research it produced continues.*
 
