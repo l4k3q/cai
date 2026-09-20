@@ -1,4 +1,19 @@
 <div align="center">
+# CAI Spectator Research Fork
+
+  本项目是 [Alias Robotics CAI](https://github.com/aliasrobotics/cai)
+  的非官方研究用途衍生版本。
+
+  上游版权归 Alias Robotics S.L. 及相关贡献者所有。
+  本仓库保留上游 LICENSE、LICENSE-MIT、DISCLAIMER 和 CITATION.cff，
+  并继续遵守原项目的非商业研究与学术用途限制。
+
+  本分支主要新增：
+  - 旁观 Agent 与题库召回
+  - DeepSeek 模型网关支持
+  - 模型运行状态侧栏
+  - Markdown 回复渲染
+  - 本地题库与教学流程
 
 # Cybersecurity AI · `CAI`
 
