@@ -1,5 +1,5 @@
 <div align="center">
-# CAI Spectator Research Fork
+#  CAI Spectator Research Fork
 
   本项目是 [Alias Robotics CAI](https://github.com/aliasrobotics/cai)
   的非官方研究用途衍生版本。
@@ -15,7 +15,7 @@
   - Markdown 回复渲染
   - 本地题库与教学流程
 
-# Cybersecurity AI · `CAI`
+## Cybersecurity AI · `CAI`
 
 **The open framework that established Cybersecurity AI as a research domain.**<br>
 *Archived. The research it produced continues.*
