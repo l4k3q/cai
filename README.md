@@ -17,7 +17,6 @@
 
 ## Cybersecurity AI · `CAI`
 
-<div align="center">
 **The open framework that established Cybersecurity AI as a research domain.**<br>
 *Archived. The research it produced continues.*
 
@@ -31,6 +30,7 @@
 [![Read the research](https://img.shields.io/badge/READ_THE_RESEARCH-254450?style=for-the-badge&labelColor=254450)](#-the-research)
 [![Contact](https://img.shields.io/badge/CONTACT-529d86?style=for-the-badge&labelColor=254450)](mailto:support@aliasrobotics.com)
 
+<div align="center">
 </div>
 
 ---
