@@ -655,3 +655,57 @@ def update_agent_models_recursively(agent, new_model, visited=None):
             elif hasattr(handoff_item, "model"):
                 # This is a direct Agent reference
                 update_agent_models_recursively(handoff_item, new_model, visited)
+
+
+def apply_provider_to_agent(agent, base_url: str | None = None, api_key: str | None = None, visited=None):
+    """
+    Attach a per-session provider override (base URL + API key) to an agent
+    and all agents in its handoffs.
+
+    The override lives as ``_provider_base`` / ``_provider_key`` attributes on the
+    model object, and is consumed by the model layer (openai_chatcompletions.py)
+    when building the litellm request. When no override is given, the model falls
+    back to the global .env configuration.
+
+    Args:
+        agent: The agent to update.
+        base_url: Custom provider base URL (``None`` = keep global).
+        api_key: Custom provider API key (``None`` = keep global).
+        visited: Set of agent names already visited to prevent infinite loops.
+    """
+    if visited is None:
+        visited = set()
+
+    if agent.name in visited:
+        return
+    visited.add(agent.name)
+
+    # Only model objects can carry extra attributes; plain-string models are
+    # resolved later via the default configuration, so skip them here.
+    if hasattr(agent, "model") and not isinstance(agent.model, str):
+        if base_url is not None:
+            agent.model._provider_base = base_url
+        if api_key is not None:
+            agent.model._provider_key = api_key
+
+    # Walk handoff agents using the same traversal as update_agent_models_recursively.
+    if hasattr(agent, "handoffs"):
+        for handoff_item in agent.handoffs:
+            if hasattr(handoff_item, "on_invoke_handoff"):
+                try:
+                    if (
+                        hasattr(handoff_item.on_invoke_handoff, "__closure__")
+                        and handoff_item.on_invoke_handoff.__closure__
+                    ):
+                        for cell in handoff_item.on_invoke_handoff.__closure__:
+                            if hasattr(cell.cell_contents, "model") and hasattr(
+                                cell.cell_contents, "name"
+                            ):
+                                apply_provider_to_agent(
+                                    cell.cell_contents, base_url, api_key, visited
+                                )
+                                break
+                except Exception:
+                    pass
+            elif hasattr(handoff_item, "model"):
+                apply_provider_to_agent(handoff_item, base_url, api_key, visited)

@@ -4,9 +4,9 @@
 TDD Red 阶段：先于实现编写，运行应失败。
 
 语义:
-- ProviderConfig: UI 保存的 {api_base, api_key, model}（均可空 = 回退）
+- ProviderConfig: UI 保存的 {api_base, api_key, model}（任一为空 = 配置不完整）
 - 持久化: JSON 文件（0600 权限, 默认 ~/.cai/spectator_provider.json）
-- 优先级: UI(文件) > CAI_SPECTATOR_* env > DEEPSEEK/OPENAI/ANTHROPIC env > 默认
+- 配置来源: 仅 UI 文件，不回退环境变量或会话 provider
 - apply_changes: 字段缺省=不变; 空串=清除; 非空=设置（strip）
 - mask_key: 绝不返回明文
 """
@@ -20,6 +20,7 @@ import pytest
 from spectator.provider_config import (
     ProviderConfig,
     apply_changes,
+    is_complete,
     load_provider_config,
     mask_key,
     resolve_provider,
@@ -101,48 +102,28 @@ class TestPersistence:
 
 
 class TestResolveProvider:
-    ENV = {
-        "CAI_SPECTATOR_API_BASE": "https://env-spectator/v1",
-        "CAI_SPECTATOR_API_KEY": "sk-env-spectator",
-        "CAI_SPECTATOR_MODEL": "env/spectator-model",
-        "DEEPSEEK_API_BASE": "https://env-deepseek/v1",
-        "DEEPSEEK_API_KEY": "sk-env-deepseek",
-        "CAI_MODEL": "env/cai-model",
-    }
-
-    def test_ui_overrides_env(self):
+    def test_complete_ui_config_is_returned(self):
         stored = ProviderConfig(
             api_base="https://ui/v1", api_key="sk-ui", model="ui/model"
         )
-        r = resolve_provider(self.ENV, stored)
+        r = resolve_provider(stored)
         assert r.api_base == "https://ui/v1"
         assert r.api_key == "sk-ui"
         assert r.model == "ui/model"
+        assert is_complete(r)
 
-    def test_env_when_no_ui(self):
-        r = resolve_provider(self.ENV, None)
-        assert r.api_base == "https://env-spectator/v1"
-        assert r.api_key == "sk-env-spectator"
-        assert r.model == "env/spectator-model"
+    def test_missing_ui_config_returns_empty(self):
+        r = resolve_provider(None)
+        assert r == ProviderConfig()
+        assert not is_complete(r)
 
-    def test_partial_ui_falls_back_per_field(self):
-        stored = ProviderConfig(api_base="https://ui/v1")  # key/model 走 env
-        r = resolve_provider(self.ENV, stored)
+    def test_partial_ui_config_does_not_fall_back(self):
+        stored = ProviderConfig(api_base="https://ui/v1")
+        r = resolve_provider(stored)
         assert r.api_base == "https://ui/v1"
-        assert r.api_key == "sk-env-spectator"
-
-    def test_env_chain_fallback(self):
-        env = {"DEEPSEEK_API_BASE": "https://d/v1", "DEEPSEEK_API_KEY": "sk-d"}
-        r = resolve_provider(env, None)
-        assert r.api_base == "https://d/v1"
-        assert r.api_key == "sk-d"
-        assert r.model == "deepseek/deepseek-v4-flash"  # 最终兜底
-
-    def test_all_empty_returns_nones_with_default_model(self):
-        r = resolve_provider({}, None)
-        assert r.api_base is None
         assert r.api_key is None
-        assert r.model == "deepseek/deepseek-v4-flash"
+        assert r.model is None
+        assert not is_complete(r)
 
 
 class TestMaskKey:

@@ -429,6 +429,7 @@ version = "1.1.5"
 source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
+    { name = "boto3" },
     { name = "cryptography" },
     { name = "curl-cffi" },
     { name = "docker" },
@@ -448,6 +449,7 @@ dependencies = [
     { name = "pytz" },
     { name = "pyyaml" },
     { name = "questionary" },
+    { name = "redis" },
     { name = "requests" },
     { name = "rich" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -559,6 +561,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "boto3", specifier = ">=1.35" },
     { name = "cai-framework", extras = ["viz", "data", "tui", "docs", "mail", "pdf", "web", "telemetry", "test"], marker = "extra == 'all'" },
     { name = "cryptography", specifier = ">=42,<44" },
     { name = "curl-cffi", specifier = ">=0.7" },
@@ -600,6 +603,7 @@ requires-dist = [
     { name = "pytz", specifier = ">=2024.1" },
     { name = "pyyaml" },
     { name = "questionary", specifier = ">=2.0.1" },
+    { name = "redis", specifier = ">=5.0" },
     { name = "requests", specifier = ">=2.0,<3" },
     { name = "rich" },
     { name = "scipy", marker = "extra == 'data'" },

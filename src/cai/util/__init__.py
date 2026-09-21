@@ -50,6 +50,7 @@ from cai.util.config_utils import (
     visualize_agent_graph,
     setup_ctf,
     update_agent_models_recursively,
+    apply_provider_to_agent,
 )
 
 # ---------------------------------------------------------------------------

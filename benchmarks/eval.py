@@ -39,7 +39,7 @@ Some environment variables are required:
         OpenRouter: https://openrouter.ai/api/v1
         Ollama: http://localhost:8000/v1
         OpenAI API: https://api.openai.com/v1)
-        DeepSeek: https://api.deepseek.com/v1
+        DeepSeek: https://api.deepseek.com
 
 If you want to see the current cost of the benchmark in real-time, add the pricing of your model in PRICING variable:
     "model": {

@@ -1,0 +1,122 @@
+[
+  {
+    "title": "SQL 注入漏洞识别与防护（SQL Injection）",
+    "aliases": ["SQLi", "数据库注入", "SQL injection"],
+    "keywords": ["SQL 注入", "SQLi", "参数化查询", "数据库安全"],
+    "recall_queries": ["登录接口可能存在 SQL 注入应该怎么判断？", "参数拼接查询有什么安全风险？"]
+  },
+  {
+    "title": "跨站脚本漏洞检测（XSS）",
+    "aliases": ["跨站脚本", "Cross-Site Scripting", "DOM XSS"],
+    "keywords": ["XSS", "输入回显", "输出编码", "CSP"],
+    "recall_queries": ["用户输入回显到页面会有什么风险？", "如何区分反射型和 DOM 型 XSS？"]
+  },
+  {
+    "title": "服务端请求伪造与云元数据风险（SSRF）",
+    "aliases": ["SSRF", "Server-Side Request Forgery", "云元数据访问"],
+    "keywords": ["SSRF", "URL 预览", "169.254.169.254", "metadata"],
+    "recall_queries": ["URL 抓取功能为什么可能访问内网？", "SSRF 如何影响云实例元数据？"]
+  },
+  {
+    "title": "对象级授权缺失与越权访问（IDOR/BOLA）",
+    "aliases": ["IDOR", "BOLA", "水平越权"],
+    "keywords": ["对象级授权", "越权访问", "资源 ID", "访问控制"],
+    "recall_queries": ["修改 user_id 能看到他人资料是什么问题？", "API 如何检查对象级授权？"]
+  },
+  {
+    "title": "JWT 身份认证配置安全",
+    "aliases": ["JSON Web Token", "JWT 安全", "令牌认证"],
+    "keywords": ["JWT", "签名算法", "token", "密钥管理"],
+    "recall_queries": ["JWT 验证时应该检查哪些字段？", "令牌算法配置错误有什么风险？"]
+  },
+  {
+    "title": "文件上传校验与存储隔离",
+    "aliases": ["任意文件上传", "Unrestricted File Upload", "上传绕过"],
+    "keywords": ["文件上传", "MIME", "扩展名", "存储隔离"],
+    "recall_queries": ["只检查文件后缀是否足够安全？", "上传文件为什么不能放在 Web 根目录？"]
+  },
+  {
+    "title": "Redis 未授权访问检测与加固",
+    "aliases": ["Redis unauthenticated access", "Redis 未授权", "6379 未授权"],
+    "keywords": ["Redis", "未授权访问", "6379", "ACL"],
+    "recall_queries": ["Redis 为什么可以不用密码访问？", "如何检测和加固 6379 未授权访问？"]
+  },
+  {
+    "title": "Active Directory Kerberoasting 风险识别",
+    "aliases": ["Kerberoast", "服务票据离线破解", "SPN 账户攻击"],
+    "keywords": ["Kerberoasting", "SPN", "TGS", "域账户"],
+    "recall_queries": ["为什么配置 SPN 的域账户可能被离线破解？", "Kerberoasting 的检测重点是什么？"]
+  },
+  {
+    "title": "Active Directory AS-REP Roasting 风险",
+    "aliases": ["AS-REP Roast", "预认证禁用攻击", "DONT_REQ_PREAUTH"],
+    "keywords": ["AS-REP Roasting", "Kerberos 预认证", "域用户", "DONT_REQ_PREAUTH"],
+    "recall_queries": ["关闭 Kerberos 预认证会有什么风险？", "AS-REP Roasting 如何进行防护？"]
+  },
+  {
+    "title": "NTLM Relay 中继攻击与防护",
+    "aliases": ["NTLM 中继", "NTLM relay", "SMB relay"],
+    "keywords": ["NTLM Relay", "SMB 签名", "强制认证", "EPA"],
+    "recall_queries": ["NTLM 凭据为什么可以被中继到其他服务？", "SMB 签名如何降低 NTLM Relay 风险？"]
+  },
+  {
+    "title": "AD CS ESC1 证书模板错误配置",
+    "aliases": ["ADCS ESC1", "证书服务提权", "Certificate Template Abuse"],
+    "keywords": ["AD CS", "ESC1", "证书模板", "SubjectAltName"],
+    "recall_queries": ["允许申请者指定 SAN 的证书模板有什么风险？", "如何审计 ADCS ESC1？"]
+  },
+  {
+    "title": "Docker Socket 暴露与容器逃逸风险",
+    "aliases": ["docker.sock", "Docker API 暴露", "容器逃逸"],
+    "keywords": ["Docker Socket", "docker.sock", "容器逃逸", "特权容器"],
+    "recall_queries": ["容器挂载 docker.sock 为什么危险？", "Docker API 暴露可能导致什么后果？"]
+  },
+  {
+    "title": "依赖混淆供应链攻击（Dependency Confusion）",
+    "aliases": ["Dependency Confusion", "依赖混淆", "包名抢注"],
+    "keywords": ["依赖混淆", "私有包", "包管理器", "供应链安全"],
+    "recall_queries": ["私有包名被公开仓库抢注是什么攻击？", "如何防止构建系统下载错误来源的依赖？"]
+  },
+  {
+    "title": "Log4Shell 与 JNDI 注入风险（Log4j）",
+    "aliases": ["Log4Shell", "CVE-2021-44228", "JNDI Injection"],
+    "keywords": ["Log4j", "JNDI", "Log4Shell", "CVE-2021-44228"],
+    "recall_queries": ["日志内容为什么可能触发远程类加载？", "Log4Shell 的检测和缓解措施是什么？"]
+  },
+  {
+    "title": "RSA 共模攻击原理（Common Modulus Attack）",
+    "aliases": ["RSA 共模攻击", "Common Modulus", "共享模数攻击"],
+    "keywords": ["RSA", "共模攻击", "互素指数", "扩展欧几里得"],
+    "recall_queries": ["两个 RSA 公钥共用 n 会有什么风险？", "RSA common modulus attack 需要哪些条件？"]
+  },
+  {
+    "title": "Android 导出组件安全审计",
+    "aliases": ["Android Exported Component", "组件暴露", "Activity 越权"],
+    "keywords": ["Android", "exported", "Activity", "Intent"],
+    "recall_queries": ["Android exported 组件为什么需要权限保护？", "如何审计可被外部调用的 Activity？"]
+  },
+  {
+    "title": "Android WebView JavaScript 接口风险",
+    "aliases": ["addJavascriptInterface", "WebView RCE", "JSBridge 安全"],
+    "keywords": ["Android WebView", "JavaScript Interface", "JSBridge", "addJavascriptInterface"],
+    "recall_queries": ["WebView 暴露 JavaScript 接口有什么风险？", "JSBridge 应该如何限制来源和能力？"]
+  },
+  {
+    "title": "RAG 系统间接提示词注入（Prompt Injection）",
+    "aliases": ["Indirect Prompt Injection", "RAG 投毒", "提示词注入"],
+    "keywords": ["Prompt Injection", "RAG", "外部文档", "工具调用"],
+    "recall_queries": ["知识库文档能否操纵 Agent 的工具调用？", "RAG 系统如何防御间接提示词注入？"]
+  },
+  {
+    "title": "跨站 WebSocket 劫持（CSWSH）",
+    "aliases": ["CSWSH", "Cross-Site WebSocket Hijacking", "WebSocket 劫持"],
+    "keywords": ["WebSocket", "CSWSH", "Origin", "Cookie 认证"],
+    "recall_queries": ["WebSocket 握手为什么也要验证 Origin？", "使用 Cookie 的 WebSocket 如何防止跨站劫持？"]
+  },
+  {
+    "title": "不安全反序列化漏洞识别",
+    "aliases": ["Insecure Deserialization", "Java 反序列化", "Pickle 反序列化"],
+    "keywords": ["反序列化", "对象数据", "gadget chain", "任意代码执行"],
+    "recall_queries": ["处理不可信序列化对象为什么危险？", "如何识别 Java 或 Python 反序列化入口？"]
+  }
+]
